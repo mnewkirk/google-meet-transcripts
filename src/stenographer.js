@@ -84,6 +84,8 @@ try {
   let TRANSCRIPT_FORMAT_SPEAKER_JOIN;
   let TRANSCRIPT_FORMAT_SESSION_JOIN;
   let TRANSCRIPT_FORMAT_MEETING;
+  let TRANSCRIPT_FORMAT_DURATIONS;
+  let TRANSCRIPT_FORMAT_DURATIONS_HEADER;
   let DEBUG;
   let READONLY;
   // let HIDE_CAPTIONS_WHILE_RECORDING;
@@ -240,10 +242,13 @@ try {
   const syncSettings = () => {
     TRANSCRIPT_FORMAT_MEETING = getOrSet('setting.transcript-format-meeting', '# $year$-$month$-$day$ $name$\n\n$text$');
     TRANSCRIPT_FORMAT_SESSION_JOIN = getOrSet('setting.transcript-format-session-join', '\n\n...\n\n');
-    TRANSCRIPT_FORMAT_SPEAKER = getOrSet('setting.transcript-format-speaker', '**$hour$:$minute$ $name$:** $text$');
+    TRANSCRIPT_FORMAT_SESSION_NEW = getOrSet('setting.transcript-format-session-new', '\n[New session]\n');
+    TRANSCRIPT_FORMAT_SPEAKER = getOrSet('setting.transcript-format-speaker', '**$hour$:$minute$ ($duration$s) $name$:** $text$');
     TRANSCRIPT_FORMAT_SPEAKER_JOIN = getOrSet('setting.transcript-format-speaker-join', '\n\n');
+    TRANSCRIPT_FORMAT_DURATIONS = getOrSet('setting.transcript-format-durations', '$speaker$: $duration$ ($percent$)');
+    TRANSCRIPT_FORMAT_DURATIONS_HEADER = getOrSet('setting.transcript-format-durations-header', 'Durations of speakers (in seconds):\n');
     SPEAKER_NAME_MAP = getOrSet('setting.speaker-name-map', {});
-    DEBUG = getOrSet('setting.debug', false);
+    DEBUG = getOrSet('setting.debug', true);
     READONLY = getOrSet('setting.readonly', false);
     // HIDE_CAPTIONS_WHILE_RECORDING = get('gmt-setting.hide-captions-while-recording');
   };
@@ -416,30 +421,41 @@ try {
       const maxSpeakerIndex = get(makeTranscriptKey(transcriptId, sessionIndex)) || 0;
 
       const speakers = [];
-
+      const durations = new Map();
+  
       for (let speakerIndex = 0; speakerIndex <= maxSpeakerIndex; speakerIndex += 1) {
         const item = get(makeTranscriptKey(transcriptId, sessionIndex, speakerIndex));
 
         if (item && item.text && item.text.match(/\S/g)) {
           const date = new Date(item.startedAt);
           const minutes = date.getMinutes();
-
+          const duration = item.duration / 1000;
           const name = item.person in SPEAKER_NAME_MAP ? SPEAKER_NAME_MAP[item.person] : item.person;
 
           const text = TRANSCRIPT_FORMAT_SPEAKER
             .replace('$hour$', date.getHours())
             .replace('$minute$', pad(minutes))
+            .replace('$duration$', duration)
             .replace('$name$', name)
             .replace('$text$', item.text);
+          console.log('now using item.duration');
+          console.log('[meet transcripts] ' + text);
           speakers.push(text);
+          if (durations.get(name)) {
+            durations.set(name, durations.get(name) + duration);
+          } else {
+            durations.set(name, duration);
+          }
         }
       }
 
       const sessionTranscript = speakers.join(TRANSCRIPT_FORMAT_SPEAKER_JOIN);
 
       if (sessionTranscript) {
+        transcript.push(TRANSCRIPT_FORMAT_SESSION_NEW);  
         transcript.push(sessionTranscript);
       }
+      transcript.push(getSpeakerDurations(durations));
     }
 
     const {
@@ -456,6 +472,34 @@ try {
       .replace('$name$', name)
       .replace('$text$', transcript.join(TRANSCRIPT_FORMAT_SESSION_JOIN));
   };
+
+  // ---------------------------------
+  // Generates the speakers and how long they have spoken
+  // ---------------------------------
+  const getSpeakerDurations = (durations) => {
+    const durationTranscripts = [];
+    if (durations.size < 1) {
+      return;
+    }  
+    var totalDurations = 0;
+
+    durations.forEach(function(value, key) {
+        totalDurations += value;
+    });
+
+    durations.forEach(function(value, key) {
+        var durationPercent = ((parseFloat(value) / totalDurations)*100).toFixed(2);
+ 
+        const duration = TRANSCRIPT_FORMAT_DURATIONS
+          .replace('$speaker$', key)
+          .replace('$duration$', value)
+          .replace('$percent$', '' + durationPercent + '%');
+        durationTranscripts.push(duration);
+    });
+    const durationSummary = TRANSCRIPT_FORMAT_DURATIONS_HEADER + durationTranscripts.join(TRANSCRIPT_FORMAT_SPEAKER_JOIN);
+    console.log(durationSummary);
+    return durationSummary;
+  }
 
   // -------------------------------------------------------------------------
   // Generates a list of names sorted by number of individual comments based
@@ -525,6 +569,7 @@ try {
       text: cache.text,
       startedAt: cache.startedAt,
       endedAt: cache.endedAt,
+      duration: cache.duration,
     });
   };
 
@@ -670,6 +715,7 @@ try {
         ...getCaptionData(node),
         startedAt: new Date(),
         endedAt: new Date(),
+        duration: 0,
         node,
         count: 0,
         pollCount: 0,
@@ -687,6 +733,7 @@ try {
 
       cache.count += 1;
       cache.endedAt = new Date();
+      cache.duration = (cache.endedAt.getTime() - cache.startedAt.getTime());
 
       cache.debounce = setInterval(
         tryTo(() => {
